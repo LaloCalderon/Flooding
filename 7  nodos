@@ -1,0 +1,291 @@
+#include "ns3/core-module.h"
+#include "ns3/network-module.h"
+#include "ns3/internet-module.h"
+#include "ns3/point-to-point-module.h"
+#include "ns3/applications-module.h"
+
+// Default Network Topology:
+//
+//  --------------n1---------n3--------------n5
+// n0  			   |          |				  |         |
+//  --------------n2---------n4--------------n6
+//    
+
+using namespace ns3;
+
+NS_LOG_COMPONENT_DEFINE ("FLOODING_UNAM");
+//Contener lo que usaremos para hacer la Retransmisión
+void enviarpkt(NodeContainer nodos, NetDeviceContainer devices1){
+  uint8_t m[7];
+  m[0] = 2;  //nodo receptor
+  m[1] = '2';  //Id clave de mapa para identificar mensajes rx 
+  m[2] = '6';  //NetDevice para identificar interfases
+  m[3] = 'H';
+  m[4] = 'o';
+  m[5] = 'L';
+  m[6] = 'A';
+  Ptr<Packet> pkt = Create<Packet> (m,7);
+  //Question:
+  //Cual es la diferencia de poner diferentes devices en esta dirección?
+  Address add = devices1.Get (0)->GetBroadcast ();
+  nodos.Get(0)->GetDevice(0)->Send (pkt,add,0x0800); //n0 -> n1
+  pkt=Create<Packet>(m,7);
+}
+
+class Nodo{
+public:
+	uint64_t mi_id;
+	NetDeviceContainer interfaces;
+	//Mapa que contiene ids de msjs que ya retransmití anteriormente
+	//para no mandar el mismo mensaje dos veces
+	
+	std::map<int,int> menajes_retransmitidos;
+  std::map<int,int>::iterator it;
+
+  Nodo(uint64_t id){
+		mi_id=id;
+	}
+
+	void addInterface(NetDeviceContainer n){
+		interfaces.Add(n);
+	}	
+
+	void recibirMensaje(Ptr<const Packet> p,Ptr<NetDevice> interfaz){
+	
+		//Revisar si ya se había recibido anteriormente el msj
+		//Si si, no se hace nada, si no reenviar pkt 
+    uint8_t buffer1[p->GetSize()]; //Llega con 9 elementos
+    uint8_t buffer[p->GetSize()-2];  //Le quito el header =7   
+    
+    p->CopyData(buffer1,p->GetSize());
+    
+    for(uint i=0;i<p->GetSize()-2;i++){
+      buffer[i]=buffer1[i+2];
+    }
+    
+    for(uint i=0;i<p->GetSize()-2;i++){
+      std::cout << (char) buffer[i]<<"-";
+    }
+    uint32_t receptor=buffer[0];
+    uint32_t id=buffer[1];
+
+    //std::cout << "Rx: "<<(char)receptor<<", id: "<<id<<", size: "<<p->GetSize() <<std::endl;
+
+    it=menajes_retransmitidos.find(id);
+    if(it != menajes_retransmitidos.end()){
+      std::cout << "Mensaje enviado anteriormente"<<std::endl; 	    
+    //Mensaje transmitido anteriormente no hago nada
+    }else{ 
+    	//Agregar id del mensaje recibido al mapa
+ 			//menajes_retransmitidos.push_back(id);
+  		menajes_retransmitidos[id]=id;
+      if(receptor==mi_id){
+				//El mensaje era para mí, imprimo
+				std::cout<<"Mensaje entregado a su destino el nodo: "<<receptor <<std::endl;
+        std::cout<<"Rx: "<< receptor<<std::endl;
+        std::cout<<"mi id: "<< mi_id<<std::endl;
+    	  }else{
+    			//Reenviar por todas las interfases menos x la que llegó
+    			//Usar el puntero a la interfaz para saber de que interfaz llegó    			
+      
+          for(uint32_t i=0;i<interfaces.GetN();i++){ //Recorro todas las interfaces
+    				
+    				//Si la interfaz es la misma interfaz por donde llegó
+  				  if(interfaces.Get(i) == interfaz){ //no hago nada
+  			 	  }else{//si no lo mando por la interfaz actual
+              //elimino los últimos dos bytes 
+              Ptr<Packet> pkt = Create<Packet> (buffer,p->GetSize()-2); 					
+              interfaces.Get(i)->Send(pkt,interfaces.Get(i)->GetBroadcast(),0x0800);
+              
+              //for( uint i = 0 ; i < p->GetSize()-2 ; i++ ){
+               //std::cout << (char)buffer[i] << "-";
+              //}
+              //interfaz -> Send(paquet, Addres o NetDeviceContainer , protocolo)
+              //nodos.Get(2)->GetDevice(2)->Send(pkt,add,0x0800);
+            }
+          }
+    		}
+    	}
+
+    std::cout<<"Recibí msj en el nodo "<<this->mi_id<<" de tamaño "<<p->GetSize()<<std::endl;
+	}
+  void recibirMensajeI1(Ptr<const Packet> p){
+		recibirMensaje(p,interfaces.Get(0));
+	}
+	void recibirMensajeI2(Ptr<const Packet> p){
+		recibirMensaje(p,interfaces.Get(1));
+	}
+	void recibirMensajeI3(Ptr<const Packet> p){
+		recibirMensaje(p,interfaces.Get(2));
+	}
+	void recibirMensajeI4(Ptr<const Packet> p){
+		recibirMensaje(p,interfaces.Get(3));
+	}
+	void recibirMensajeI5(Ptr<const Packet> p){
+		recibirMensaje(p,interfaces.Get(4));
+	}
+
+};
+
+int main (int argc, char *argv[])
+{
+  CommandLine cmd (__FILE__);
+  cmd.Parse (argc, argv);
+
+  Time::SetResolution (Time::NS);
+  
+  //std::list<Nodo*> mis_nodos;
+  std::vector<Nodo*> mis_nodos;
+  for(uint32_t i=0;i<7; i++){
+  	//Nodo con id de 0-6
+  	mis_nodos.push_back(new Nodo(i));
+  }
+
+  NodeContainer nodos;
+  nodos.Create (7);
+
+  PointToPointHelper pointToPoint;
+  pointToPoint.SetDeviceAttribute ("DataRate", StringValue ("200kbps"));
+  pointToPoint.SetChannelAttribute ("Delay", StringValue ("0ms"));
+
+  //Topología de la red
+  NetDeviceContainer devices1;
+  devices1 = pointToPoint.Install (nodos.Get (0),nodos.Get (1));
+  mis_nodos[0]->addInterface(devices1.Get(0));
+  mis_nodos[1]->addInterface(devices1.Get(1));
+  NetDeviceContainer devices2;
+  devices2 = pointToPoint.Install (nodos.Get (0),nodos.Get (2));
+  mis_nodos[0]->addInterface(devices2.Get(0));
+  mis_nodos[2]->addInterface(devices2.Get(1));
+  NetDeviceContainer devices3;
+  devices3 = pointToPoint.Install (nodos.Get (1),nodos.Get (2));
+  mis_nodos[1]->addInterface(devices3.Get(0));
+  mis_nodos[2]->addInterface(devices3.Get(1));
+  
+  NetDeviceContainer devices4;
+  devices4 = pointToPoint.Install (nodos.Get (1),nodos.Get (3));
+  mis_nodos[1]->addInterface(devices4.Get(0));
+  mis_nodos[3]->addInterface(devices4.Get(1));
+
+  NetDeviceContainer devices5;
+  devices5 = pointToPoint.Install (nodos.Get (2),nodos.Get (4));
+  mis_nodos[2]->addInterface(devices5.Get(0));
+  mis_nodos[4]->addInterface(devices5.Get(1));
+
+  NetDeviceContainer devices6;
+  devices6 = pointToPoint.Install (nodos.Get (3),nodos.Get (4));
+  mis_nodos[3]->addInterface(devices6.Get(0));
+  mis_nodos[4]->addInterface(devices6.Get(1));
+
+  NetDeviceContainer devices7;
+  devices7 = pointToPoint.Install (nodos.Get (3),nodos.Get (5));
+  mis_nodos[3]->addInterface(devices7.Get(0));
+  mis_nodos[5]->addInterface(devices7.Get(1));
+
+  NetDeviceContainer devices8;
+  devices8 = pointToPoint.Install (nodos.Get (4),nodos.Get (6));
+  mis_nodos[4]->addInterface(devices8.Get(0));
+  mis_nodos[6]->addInterface(devices8.Get(1));
+
+  NetDeviceContainer devices9;
+  devices9 = pointToPoint.Install (nodos.Get (5),nodos.Get (6));
+  mis_nodos[5]->addInterface(devices9.Get(0));
+  mis_nodos[6]->addInterface(devices9.Get(1));
+  
+  /*
+  NetDeviceContainer devices;
+  devices.Add(devices1);
+  devices.Add(devices2);
+  devices.Add(devices3);
+  devices.Add(devices4);
+  devices.Add(devices5);
+  devices.Add(devices6);
+  devices.Add(devices7);
+  devices.Add(devices8);
+  devices.Add(devices9);
+  Ipv4AddressHelper address;
+  address.SetBase("10.1.1.0","255.255.255.0");
+  Ipv4InterfaceContainer interfazes =address.Assign(devices);
+  */
+  uint8_t m[7];
+  m[0] = '2';  //nodo receptor
+  m[1] = '1';  //Id clave de mapa para identificar mensajes rx 
+  m[2] = '6';  //NetDevice para identificar interfases
+  m[3] = 'H';
+  m[4] = 'o';
+  m[5] = 'L';
+  m[6] = 'A';
+  Ptr<Packet> pkt = Create<Packet> (m,7);
+  //Question:
+  //Cual es la diferencia de poner diferentes devices en esta dirección?
+  Address add = devices2.Get (1)->GetBroadcast ();
+  //Address add2 = devices1.Get (1)->GetBroadcast ();
+  nodos.Get(0)->GetDevice(0)->Send (pkt,add,0x0800); //n0 -> n1
+  
+  pkt=Create<Packet>(m,7);
+  //nodos.Get(0)->GetDevice(1)->Send (pkt,add2,0x0800); //n0 -> n2
+  
+  uint8_t s[6];
+  s[0] = '2';  //nodo receptor
+  s[1] = '1';  //Id clave de mapa para identificar mensajes rx 
+  s[2] = 'x';  //NetDevice para identificar interfases
+  s[3] = 'p';
+  s[4] = 'r';
+  s[5] = 'u';
+
+  uint8_t a[5];
+  a[0] = '2';  //nodo receptor
+  a[1] = '2';  //Id clave de mapa para identificar mensajes rx 
+  a[2] = 'x';  //NetDevice para identificar interfases
+  a[3] = '.';
+  a[4] = 'r';
+  
+  //Sólo tengo 3 interfaces
+  //   i0---0--1----2
+  // n0  	   |
+  //   i1---0--1----2
+  //Get device controla la interfaz por donde see va mandar pkt, 
+  //nodos el número de nodo
+
+  pkt=Create<Packet>(s,6);
+  //nodos.Get(1)->GetDevice(1)->Send (pkt,add,0x0800); //n1 -> n2
+  pkt=Create<Packet>(a,5);
+  //nodos.Get(2)->GetDevice(1)->Send (pkt,add,0x0800); //n2 -> n1
+  
+  //Activar las Trace Sources de todos los nodos
+  enviarpkt(nodos,devices2);
+  //Simulator::Schedule(Seconds(5), &enviarpkt,nodos, devices2);
+
+  nodos.Get(0)->GetDevice (0)->TraceConnectWithoutContext ("PhyRxEnd", MakeCallback(&Nodo::recibirMensajeI1,mis_nodos[0]));
+  nodos.Get(0)->GetDevice (1)->TraceConnectWithoutContext ("PhyRxEnd", MakeCallback(&Nodo::recibirMensajeI2,mis_nodos[0]));
+
+  nodos.Get(1)->GetDevice (0)->TraceConnectWithoutContext ("PhyRxEnd", MakeCallback(&Nodo::recibirMensajeI1,mis_nodos[1]));
+  nodos.Get(1)->GetDevice (1)->TraceConnectWithoutContext ("PhyRxEnd", MakeCallback(&Nodo::recibirMensajeI2,mis_nodos[1]));
+  nodos.Get(1)->GetDevice (2)->TraceConnectWithoutContext ("PhyRxEnd", MakeCallback(&Nodo::recibirMensajeI3,mis_nodos[1]));
+  
+  nodos.Get(2)->GetDevice (0)->TraceConnectWithoutContext ("PhyRxEnd", MakeCallback(&Nodo::recibirMensajeI1,mis_nodos[2]));
+  nodos.Get(2)->GetDevice (1)->TraceConnectWithoutContext ("PhyRxEnd", MakeCallback(&Nodo::recibirMensajeI2,mis_nodos[2]));
+  nodos.Get(2)->GetDevice (2)->TraceConnectWithoutContext ("PhyRxEnd", MakeCallback(&Nodo::recibirMensajeI3,mis_nodos[2]));
+
+  nodos.Get(3)->GetDevice (0)->TraceConnectWithoutContext ("PhyRxEnd", MakeCallback(&Nodo::recibirMensajeI1,mis_nodos[3]));
+  nodos.Get(3)->GetDevice (1)->TraceConnectWithoutContext ("PhyRxEnd", MakeCallback(&Nodo::recibirMensajeI2,mis_nodos[3]));
+  nodos.Get(3)->GetDevice (2)->TraceConnectWithoutContext ("PhyRxEnd", MakeCallback(&Nodo::recibirMensajeI4,mis_nodos[3]));
+
+  nodos.Get(4)->GetDevice (0)->TraceConnectWithoutContext ("PhyRxEnd", MakeCallback(&Nodo::recibirMensajeI1,mis_nodos[4]));
+  nodos.Get(4)->GetDevice (1)->TraceConnectWithoutContext ("PhyRxEnd", MakeCallback(&Nodo::recibirMensajeI2,mis_nodos[4]));
+  nodos.Get(4)->GetDevice (2)->TraceConnectWithoutContext ("PhyRxEnd", MakeCallback(&Nodo::recibirMensajeI5,mis_nodos[4]));
+
+  nodos.Get(5)->GetDevice (0)->TraceConnectWithoutContext ("PhyRxEnd", MakeCallback(&Nodo::recibirMensajeI1,mis_nodos[5]));
+  nodos.Get(5)->GetDevice (1)->TraceConnectWithoutContext ("PhyRxEnd", MakeCallback(&Nodo::recibirMensajeI2,mis_nodos[5]));
+
+  nodos.Get(6)->GetDevice (0)->TraceConnectWithoutContext ("PhyRxEnd", MakeCallback(&Nodo::recibirMensajeI1,mis_nodos[6]));
+  nodos.Get(6)->GetDevice (1)->TraceConnectWithoutContext ("PhyRxEnd", MakeCallback(&Nodo::recibirMensajeI2,mis_nodos[6]));
+
+  Simulator::Run ();
+  Simulator::Destroy ();
+/*
+  my_union u;
+  u.i = 2147483647;
+  std::cout << (int)u.a[0] << "." << (int)u.a[1] << "." << (int)u.a[2] << "." << (int)u.a[3];*/
+  return 0;
+}
